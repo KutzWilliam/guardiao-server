@@ -1,0 +1,94 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2026-05-24T20:00:00.000Z",
+  "__export_source": "insomnia.desktop.app:v2023.5.0",
+  "resources": [
+    {
+      "_id": "wrk_guardiao",
+      "parentId": null,
+      "name": "Guardião API - MVP",
+      "description": "Coleção para testar as rotas do backend do Guardião.",
+      "scope": "collection",
+      "_type": "workspace"
+    },
+    {
+      "_id": "env_guardiao",
+      "parentId": "wrk_guardiao",
+      "name": "Base Environment",
+      "data": {
+        "base_url": "http://localhost:3000",
+        "device_id": "COLE_O_ID_AQUI"
+      },
+      "dataPropertyOrder": {
+        "&": ["base_url", "device_id"]
+      },
+      "isPrivate": false,
+      "_type": "environment"
+    },
+    {
+      "_id": "req_health",
+      "parentId": "wrk_guardiao",
+      "url": "{{ _.base_url }}/health",
+      "name": "1. Healthcheck",
+      "method": "GET",
+      "body": {},
+      "parameters": [],
+      "headers": [],
+      "_type": "request"
+    },
+    {
+      "_id": "req_register",
+      "parentId": "wrk_guardiao",
+      "url": "{{ _.base_url }}/auth/register",
+      "name": "2. Register Device",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n\t\"deviceModel\": \"Samsung Galaxy S23\",\n\t\"osVersion\": \"Android 14\"\n}"
+      },
+      "parameters": [],
+      "headers": [{"name": "Content-Type", "value": "application/json"}],
+      "_type": "request"
+    },
+    {
+      "_id": "req_panic",
+      "parentId": "wrk_guardiao",
+      "url": "{{ _.base_url }}/panic/trigger",
+      "name": "3. Trigger Pânico",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n\t\"deviceId\": \"{{ _.device_id }}\",\n\t\"triggerType\": \"VOLUME_PATTERN\"\n}"
+      },
+      "parameters": [],
+      "headers": [{"name": "Content-Type", "value": "application/json"}],
+      "_type": "request"
+    },
+    {
+      "_id": "req_cancel",
+      "parentId": "wrk_guardiao",
+      "url": "{{ _.base_url }}/panic/cancel",
+      "name": "4. Cancelar Pânico",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n\t\"deviceId\": \"{{ _.device_id }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [{"name": "Content-Type", "value": "application/json"}],
+      "_type": "request"
+    },
+    {
+      "_id": "req_admin",
+      "parentId": "wrk_guardiao",
+      "url": "{{ _.base_url }}/admin/devices",
+      "name": "5. Listar Devices (Admin)",
+      "method": "GET",
+      "body": {},
+      "parameters": [],
+      "headers": [],
+      "_type": "request"
+    }
+  ]
+}
