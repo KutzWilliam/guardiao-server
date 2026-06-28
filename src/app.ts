@@ -1,14 +1,25 @@
 import express, { Request, Response } from 'express';
 import * as admin from 'firebase-admin';
+import * as fs from 'fs';
+import * as path from 'path';
 
-const serviceAccount = require('../firebase-key.json');
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+const keyPath = path.resolve(__dirname, '../firebase-key.json');
+
+
+if (fs.existsSync(keyPath)) {
+  const serviceAccount = require(keyPath);
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+  console.log("🔥 Firebase Admin inicializado com sucesso.");
+} else {
+  console.warn("⚠️ Arquivo firebase-key.json não encontrado!");
+  console.warn("   └ Se isto for um teste no GitHub (Jest), ignore. O sistema não vai quebrar.");
+  console.warn("   └ Se for no Render, certifique-se de ter adicionado o Secret File.");
+}
 
 const app = express();
 app.use(express.json());
-// Necessário para processar o formulário HTML que a amiga vai enviar
 app.use(express.urlencoded({ extended: true }));
 
 const MEU_TOKEN_FCM = "dWVHc4_GRf2JlqVNwP5fj7:APA91bHpUMdAaxNzqEZ0RnEL8XH0W75lew48rhZBVJQYrNppSZZXE4Y8__zoCxuii2ldCM2SiFypLdTcQXr7O5J50ETU7SmVSSkQWI93MK3Db0tGw8YaZEc";
