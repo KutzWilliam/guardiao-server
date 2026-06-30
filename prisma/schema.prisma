@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// 📱 Tabela Central de Dispositivos
+model Device {
+  id          String   @id @default(uuid()) // O UUID único que acabamos de criar no Android
+  fcmToken    String?  // O token gigante do Firebase para aquele celular específico
+  status      Status   @default(SECURE)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relacionamentos
+  locations   Location[]
+  timers      Timer[]
+  panics      PanicEvent[]
+}
+
+// Estados possíveis de um celular na Torre de Controle
+enum Status {
+  SECURE
+  ALERTA
+  PANICO
+}
+
+// 📍 Histórico de Rastreio GPS (A Rota de Resgate)
+model Location {
+  id          Int      @id @default(autoincrement())
+  latitude    Float
+  longitude   Float
+  timestamp   DateTime @default(now())
+
+  deviceId    String
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, timestamp(sort: Desc)]) // Índice para buscas ultra-rápidas na Torre de Controle
+}
+
+// ⏰ Timers de Segurança Inteligentes
+model Timer {
+  id          Int      @id @default(autoincrement())
+  expiresAt   DateTime // O momento exato em que o servidor deve disparar o alarme
+  safeLat     Float
+  safeLng     Float
+  safeRadius  Int
+  isActive    Boolean  @default(true)
+
+  deviceId    String
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+}
+
+// 🚨 Registro de Auditoria de Pânicos
+model PanicEvent {
+  id          Int      @id @default(autoincrement())
+  triggerType String   // Ex: GATILHO_VOZ_OFFLINE, INTERCEPTACAO_BANCO
+  timestamp   DateTime @default(now())
+  resolved    Boolean  @default(false) // Se o admin na Torre de Controle já validou/cancelou
+
+  deviceId    String
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+}
