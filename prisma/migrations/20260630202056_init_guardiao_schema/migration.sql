@@ -1,0 +1,2 @@
+-- Baseline: tabelas já criadas no Supabase via Prisma migrate dev
+-- Este ficheiro marca a migração como aplicada sem executar SQL duplicate

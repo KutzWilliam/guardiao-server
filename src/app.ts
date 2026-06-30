@@ -247,7 +247,7 @@ app.post('/resgate/action', async (req: Request, res: Response) => {
     } else if (decisao === 'panico') {
       await prisma.device.update({
         where: { id: deviceId },
-        data: { status: 'PANIC' }
+        data: { status: 'PANICO' }
       });
       await prisma.panicEvent.create({
         data: { deviceId, triggerType: 'CONTATO_CONFIRMOU_RESGATE' }
