@@ -103,7 +103,7 @@ app.post('/timer/start', async (req: Request, res: Response) => {
     await prisma.device.upsert({
       where: { id: deviceId },
       update: { status: 'SECURE' },
-      create: { id: deviceId, name: 'Dispositivo Desconhecido' }
+      create: { id: deviceId }
     });
   } catch (e) {
     console.error("Erro ao registrar no banco ao iniciar timer:", e);
