@@ -79,25 +79,20 @@ app.post('/auth/register', async (req: Request, res: Response) => {
 
 app.post('/location/update', async (req: Request, res: Response) => {
   const { deviceId, latitude, longitude } = req.body;
-
   try {
-    // 1. Garante que o dispositivo existe no banco
+    // Upsert corrigido: apenas id (o Prisma já sabe o que fazer)
     await prisma.device.upsert({
       where: { id: deviceId },
-      update: {},
-      create: { id: deviceId, name: 'Dispositivo Desconhecido' }
+      update: {}, 
+      create: { id: deviceId }
     });
 
-    // 2. Insere a localização no histórico
     await prisma.location.create({
       data: { deviceId, latitude, longitude }
     });
-
-    console.log(`📍 BD: Localização salva [${deviceId}]: Lat ${latitude}, Lng ${longitude}`);
-    res.status(200).json({ message: 'Coordenadas salvas no banco.' });
+    res.status(200).json({ message: 'Coordenadas salvas.' });
   } catch (error) {
-    console.error("❌ Erro ao salvar localização:", error);
-    res.status(500).json({ error: 'Erro de integridade.' });
+    res.status(500).json({ error: 'Erro no banco.' });
   }
 });
 
@@ -157,27 +152,26 @@ app.post('/timer/start', async (req: Request, res: Response) => {
 
 app.post('/panic/trigger', async (req: Request, res: Response) => {
   const { deviceId, triggerType } = req.body;
-
   try {
+    // Mapeamento correto para o seu Enum
+    const statusAtual = (triggerType === "PIN_PANICO_IMEDIATO" || triggerType === "GATILHO_VOZ_OFFLINE") ? 'PANICO' : 'ALERTA';
+
     await prisma.device.upsert({
       where: { id: deviceId },
-      update: { status: triggerType === "PIN_MODO_DEGRADADO" ? 'DEGRADED' : 'PANIC' },
-      create: { id: deviceId, status: triggerType === "PIN_MODO_DEGRADADO" ? 'DEGRADED' : 'PANIC' }
+      update: { status: statusAtual },
+      create: { id: deviceId, status: statusAtual }
     });
 
     await prisma.panicEvent.create({
       data: { deviceId, triggerType }
     });
 
-    console.log(`\n🚨 ALERTA SALVO NO BD! Device: ${deviceId} | Gatilho: ${triggerType}`);
-
-    if (triggerType !== "PIN_MODO_DEGRADADO") {
+    if (statusAtual === 'PANICO') {
       enviarComandoLockFCM(deviceId, triggerType);
     }
-    res.status(200).json({ message: 'Pânico registrado no banco.' });
+    res.status(200).json({ message: 'Pânico registrado.' });
   } catch (error) {
-    console.error("❌ Erro ao salvar pânico no BD:", error);
-    res.status(500).json({ error: 'Erro ao registrar pânico.' });
+    res.status(500).json({ error: 'Erro ao registrar.' });
   }
 });
 
