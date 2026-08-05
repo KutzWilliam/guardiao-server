@@ -1,8 +1,8 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import * as admin from 'firebase-admin';
 import * as fs from 'fs';
 import * as path from 'path';
-import { PrismaClient } from '@prisma/client'; // NOVO: Importação do Prisma
+import { PrismaClient } from '@prisma/client';
 
 const keyPath = path.resolve(__dirname, '../firebase-key.json');
 
@@ -22,20 +22,19 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// NOVO: Inicialização do cliente de Banco de Dados
+// Inicialização do cliente de Banco de Dados
 const prisma = new PrismaClient();
 
-const MEU_TOKEN_FCM = "dWVHc4_GRf2JlqVNwP5fj7:APA91bHpUMdAaxNzqEZ0RnEL8XH0W75lew48rhZBVJQYrNppSZZXE4Y8__zoCxuii2ldCM2SiFypLdTcQXr7O5J50ETU7SmVSSkQWI93MK3Db0tGw8YaZEc";
-
-// MOCK DB reduzido: Agora apenas gere os identificadores dos Timers da RAM do Node
-const mockDB = {
-  timers: new Map<string, NodeJS.Timeout>()
-};
+// Prisma já inicializado acima
 
 // ==========================================
 // FUNÇÕES AUXILIARES
 // ==========================================
 
+/**
+ * Calcula a distância em metros entre dois pontos geográficos.
+ * Preservado aqui pois será reutilizado pelo futuro CronJob de auditoria de timers.
+ */
 function calcularDistanciaHaversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371e3;
   const rad = Math.PI / 180;
@@ -49,7 +48,12 @@ function calcularDistanciaHaversine(lat1: number, lon1: number, lat2: number, lo
 async function enviarComandoLockFCM(deviceId: string, triggerType: string) {
   console.log(`📡 [${deviceId}] Disparando comando de LOCK via FCM. Motivo: ${triggerType}...`);
   try {
-    const mensagem = { data: { comando: "LOCK" }, token: MEU_TOKEN_FCM };
+    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+    if (!device || !device.fcmToken) {
+      console.error(`❌ [${deviceId}] Falha ao enviar FCM: O dispositivo não possui um fcmToken cadastrado.`);
+      return;
+    }
+    const mensagem = { data: { comando: "LOCK" }, token: device.fcmToken };
     const response = await admin.messaging().send(mensagem);
     console.log(`✅ Comando enviado com sucesso! ID: ${response}`);
   } catch (error) {
@@ -57,6 +61,10 @@ async function enviarComandoLockFCM(deviceId: string, triggerType: string) {
   }
 }
 
+/**
+ * Alerta um contato de emergência com o link de resgate.
+ * Preservado aqui pois será chamado pelo futuro CronJob de auditoria de timers.
+ */
 function alertarContatoDeEmergencia(deviceId: string) {
   const linkResgate = `https://SEU_URL_DO_RENDER.onrender.com/resgate/${deviceId}`;
   console.log(`\n======================================================`);
@@ -68,7 +76,7 @@ function alertarContatoDeEmergencia(deviceId: string) {
 }
 
 // ==========================================
-// ROTAS DA API REST (Agora conectadas ao PostgreSQL)
+// ROTAS DA API REST
 // ==========================================
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
@@ -80,10 +88,9 @@ app.post('/auth/register', async (req: Request, res: Response) => {
 app.post('/location/update', async (req: Request, res: Response) => {
   const { deviceId, latitude, longitude } = req.body;
   try {
-    // Upsert corrigido: apenas id (o Prisma já sabe o que fazer)
     await prisma.device.upsert({
       where: { id: deviceId },
-      update: {}, 
+      update: {},
       create: { id: deviceId }
     });
 
@@ -96,64 +103,232 @@ app.post('/location/update', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/timer/start', async (req: Request, res: Response) => {
-  const { deviceId, durationTime, safeLat, safeLng, safeRadiusMeters } = req.body;
+// ==========================================
+// SINCRONIZAÇÃO EM NUVEM (Geofences e Contatos)
+// ==========================================
+
+app.post('/sync/safezone', async (req: Request, res: Response) => {
+  const { id, deviceId, name, latitude, longitude, radiusMeters } = req.body;
+  
+  if (!id || !deviceId || !name || latitude == null || longitude == null || radiusMeters == null) {
+    return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+  }
+
+  try {
+    // Garante que o dispositivo existe
+    await prisma.device.upsert({
+      where: { id: deviceId },
+      update: {},
+      create: { id: deviceId }
+    });
+
+    const safeZone = await prisma.safeZone.upsert({
+      where: { id },
+      update: { name, latitude, longitude, radiusMeters, deviceId },
+      create: { id, name, latitude, longitude, radiusMeters, deviceId }
+    });
+    
+    return res.status(200).json({ message: 'SafeZone sincronizada com sucesso.', safeZone });
+  } catch (error) {
+    console.error('Erro no sync de safezone:', error);
+    return res.status(500).json({ error: 'Erro interno ao sincronizar SafeZone.' });
+  }
+});
+
+app.post('/sync/contact', async (req: Request, res: Response) => {
+  const { id, deviceId, name, phone } = req.body;
+  
+  if (!id || !deviceId || !name || !phone) {
+    return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+  }
+
+  try {
+    // Garante que o dispositivo existe
+    await prisma.device.upsert({
+      where: { id: deviceId },
+      update: {},
+      create: { id: deviceId }
+    });
+
+    const contact = await prisma.contact.upsert({
+      where: { id },
+      update: { name, phone, deviceId },
+      create: { id, name, phone, deviceId }
+    });
+    
+    return res.status(200).json({ message: 'Contato sincronizado com sucesso.', contact });
+  } catch (error) {
+    console.error('Erro no sync de contato:', error);
+    return res.status(500).json({ error: 'Erro interno ao sincronizar Contato.' });
+  }
+});
+
+app.post('/sync/fcm', async (req: Request, res: Response) => {
+  const { deviceId, fcmToken } = req.body;
+  if (!deviceId || !fcmToken) {
+    return res.status(400).json({ error: 'deviceId e fcmToken são obrigatórios.' });
+  }
 
   try {
     await prisma.device.upsert({
       where: { id: deviceId },
-      update: { status: 'SECURE' },
-      create: { id: deviceId }
+      update: { fcmToken },
+      create: { id: deviceId, fcmToken }
     });
-  } catch (e) {
-    console.error("Erro ao registrar no banco ao iniciar timer:", e);
+    return res.status(200).json({ message: 'FCM Token sincronizado.' });
+  } catch (error) {
+    console.error('Erro no sync do FCM Token:', error);
+    return res.status(500).json({ error: 'Erro interno.' });
+  }
+});
+
+// ==========================================
+// ⏰ SMART TIMER — Arquitetura de Banco de Dados
+// Nota: A lógica de disparo de alertas foi removida desta rota.
+// Um CronJob externo será responsável por auditar os registros
+// com isActive=true cujo targetTimestamp já passou.
+// ==========================================
+
+/**
+ * POST /timer/start
+ * Cria um registro de Timer persistente no banco de dados.
+ *
+ * Payload: {
+ *   deviceId: string,
+ *   eventName: string,
+ *   targetTimestamp: string (ISO 8601, ex: "2026-08-04T23:00:00Z"),
+ *   safeZoneId?: string (UUID de uma SafeZone já cadastrada, opcional),
+ *   contactIds: string[] (UUIDs dos Contacts a notificar caso expire)
+ * }
+ */
+app.post('/timer/start', async (req: Request, res: Response) => {
+  const { deviceId, eventName, targetTimestamp, safeZoneId, contactIds } = req.body;
+
+  // Validação básica dos campos obrigatórios
+  if (!deviceId || !eventName || !targetTimestamp) {
+    return res.status(400).json({
+      error: 'Campos obrigatórios ausentes: deviceId, eventName, targetTimestamp.'
+    });
   }
 
-  if (mockDB.timers.has(deviceId)) { clearTimeout(mockDB.timers.get(deviceId)!); }
+  const parsedTimestamp = new Date(targetTimestamp);
+  if (isNaN(parsedTimestamp.getTime())) {
+    return res.status(400).json({ error: 'targetTimestamp inválido. Use o formato ISO 8601.' });
+  }
 
-  console.log(`⏰ Timer iniciado para [${deviceId}]. Duração: ${durationTime}s`);
-  const delayParaTestesMs = durationTime * 1000;
+  if (parsedTimestamp <= new Date()) {
+    return res.status(400).json({ error: 'targetTimestamp deve ser uma data futura.' });
+  }
 
-  const timerId = setTimeout(async () => {
-    console.log(`\n⏳ O tempo de [${deviceId}] esgotou! Consultando banco de dados...`);
+  try {
+    // Garante que o dispositivo existe no banco antes de criar o timer
+    await prisma.device.upsert({
+      where: { id: deviceId },
+      update: {},
+      create: { id: deviceId }
+    });
 
-    try {
-      // Busca a última localização registrada no Supabase
-      const lastLocation = await prisma.location.findFirst({
-        where: { deviceId },
-        orderBy: { timestamp: 'desc' }
-      });
+    // Monta o bloco de conexão N:M com os contatos (se fornecidos)
+    const contactsConnect = Array.isArray(contactIds) && contactIds.length > 0
+      ? { connect: contactIds.map((id: string) => ({ id })) }
+      : undefined;
 
-      if (!lastLocation) {
-        console.log(`🚨 PERIGO: Sem sinal de GPS registrado no banco.`);
-        alertarContatoDeEmergencia(deviceId);
-        return;
-      }
+    // Monta a conexão opcional com a SafeZone
+    const safeZoneConnect = safeZoneId
+      ? { connect: { id: safeZoneId } }
+      : undefined;
 
-      const distance = calcularDistanciaHaversine(safeLat, safeLng, lastLocation.latitude, lastLocation.longitude);
-      console.log(`📏 Distância da zona segura: ${distance.toFixed(2)} metros`);
+    // Cria o Timer no banco — a partir daqui, o CronJob é responsável por auditar
+    const timer = await prisma.timer.create({
+      data: {
+        eventName,
+        targetTimestamp: parsedTimestamp,
+        device: { connect: { id: deviceId } },
+        safeZone: safeZoneConnect,
+        contacts: contactsConnect,
+      },
+      include: {
+        safeZone: true,
+        contacts: { select: { id: true, name: true, phone: true } },
+      },
+    });
 
-      if (distance <= safeRadiusMeters) {
-        console.log(`✅ A usuária chegou no destino seguro. Cancelando alerta.\n`);
-      } else {
-        console.log(`🚨 PERIGO: Fora do raio seguro! Avisando Contato!`);
-        alertarContatoDeEmergencia(deviceId);
-      }
-    } catch (error) {
-      console.error("Erro ao verificar timer no banco:", error);
-    } finally {
-      mockDB.timers.delete(deviceId);
+    console.log(`⏰ [${deviceId}] Timer criado no banco. Evento: "${eventName}", Expira em: ${parsedTimestamp.toISOString()}`);
+
+    return res.status(201).json({
+      message: 'Timer criado com sucesso. O CronJob irá auditar no momento certo.',
+      timer,
+    });
+  } catch (error: any) {
+    // Captura erro de FK inválida (safeZoneId ou contactIds inexistentes)
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'SafeZone ou Contact não encontrado. Verifique os IDs.' });
     }
-  }, delayParaTestesMs);
+    console.error("Erro ao criar timer:", error);
+    return res.status(500).json({ error: 'Erro interno ao criar o timer.' });
+  }
+});
 
-  mockDB.timers.set(deviceId, timerId);
-  res.status(200).json({ message: 'Timer ativado com sucesso.' });
+/**
+ * POST /timer/checkin
+ * Realiza o check-in manual da usuária, desarmando o timer.
+ * Isso indica que ela chegou ao destino ou está segura no momento combinado.
+ *
+ * Payload: { deviceId: string, timerId: number }
+ */
+app.post('/timer/checkin', async (req: Request, res: Response) => {
+  const { deviceId, timerId } = req.body;
+
+  if (!deviceId || !timerId) {
+    return res.status(400).json({ error: 'Campos obrigatórios ausentes: deviceId, timerId.' });
+  }
+
+  try {
+    // Busca o timer verificando simultaneamente que ele pertence ao deviceId correto
+    const timer = await prisma.timer.findFirst({
+      where: {
+        id: Number(timerId),
+        deviceId,
+      },
+    });
+
+    if (!timer) {
+      // Retorna 403 para não revelar se o timerId existe mas pertence a outro device
+      return res.status(403).json({
+        error: 'Timer não encontrado ou este dispositivo não tem permissão para fazer check-in nele.',
+      });
+    }
+
+    if (!timer.isActive) {
+      return res.status(409).json({
+        error: 'Este timer já foi encerrado (check-in realizado ou expiração já processada).',
+      });
+    }
+
+    // Desativa o timer: bomba-relógio desarmada ✅
+    const updatedTimer = await prisma.timer.update({
+      where: { id: Number(timerId) },
+      data: {
+        checkedIn: true,
+        isActive: false,
+      },
+    });
+
+    console.log(`✅ [${deviceId}] Check-in realizado para o timer #${timerId} ("${updatedTimer.eventName}"). Alarme desarmado.`);
+
+    return res.status(200).json({
+      message: 'Check-in realizado com sucesso. Alarme desarmado.',
+      timer: updatedTimer,
+    });
+  } catch (error) {
+    console.error("Erro ao realizar check-in:", error);
+    return res.status(500).json({ error: 'Erro interno ao realizar check-in.' });
+  }
 });
 
 app.post('/panic/trigger', async (req: Request, res: Response) => {
   const { deviceId, triggerType } = req.body;
   try {
-    // Mapeamento correto para o seu Enum
     const statusAtual = (triggerType === "PIN_PANICO_IMEDIATO" || triggerType === "GATILHO_VOZ_OFFLINE") ? 'PANICO' : 'ALERTA';
 
     await prisma.device.upsert({
@@ -261,6 +436,169 @@ app.post('/resgate/action', async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Erro ao registrar ação de resgate:", error);
     res.status(500).send("Erro ao processar a requisição.");
+  }
+});
+
+// ==========================================
+// 🛡️ ADMIN API — Torre de Controle
+// Todas as rotas abaixo exigem o header X-Admin-Key.
+// NUNCA exponha a chave ADMIN_API_KEY no cliente.
+// ==========================================
+
+function verificarAdminKey(req: Request, res: Response, next: NextFunction) {
+  const chave = req.headers['x-admin-key'];
+  const chaveEsperada = process.env.ADMIN_API_KEY;
+
+  // Rejeita se a chave não está configurada no servidor (ambiente inválido)
+  if (!chaveEsperada) {
+    console.error('❌ [ADMIN] ADMIN_API_KEY não configurada no ambiente do servidor!');
+    return res.status(503).json({ error: 'Serviço admin não configurado.' });
+  }
+
+  if (!chave || chave !== chaveEsperada) {
+    console.warn(`⚠️ [ADMIN] Tentativa de acesso admin não autorizada. IP: ${req.ip}`);
+    return res.status(401).json({ error: 'Não autorizado.' });
+  }
+
+  next();
+}
+
+// Valida UUID v4 para evitar SQL injection ou enumeração de IDs
+function isValidUUID(str: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+}
+
+/**
+ * GET /admin/devices
+ * Retorna todos os dispositivos com resumo de status, última localização e pânico ativo.
+ */
+app.get('/admin/devices', verificarAdminKey, async (req: Request, res: Response) => {
+  try {
+    const devices = await prisma.device.findMany({
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        locations: { orderBy: { timestamp: 'desc' }, take: 1 },
+        panics:    { where: { resolved: false }, orderBy: { timestamp: 'desc' }, take: 1 },
+        timers:    { where: { isActive: true } },
+      },
+    });
+    res.json(devices);
+  } catch (error) {
+    console.error('[ADMIN] Erro ao listar devices:', error);
+    res.status(500).json({ error: 'Erro interno ao listar dispositivos.' });
+  }
+});
+
+/**
+ * GET /admin/devices/:deviceId
+ * Retorna dados completos do dispositivo: localização, timers ativos, pânicos, contatos e zonas.
+ */
+app.get('/admin/devices/:deviceId', verificarAdminKey, async (req: Request, res: Response) => {
+  const { deviceId } = req.params;
+
+  if (!isValidUUID(deviceId)) {
+    return res.status(400).json({ error: 'ID de dispositivo inválido.' });
+  }
+
+  try {
+    const device = await prisma.device.findUnique({
+      where: { id: deviceId },
+      include: {
+        locations: { orderBy: { timestamp: 'desc' }, take: 1 },
+        panics:    { where: { resolved: false }, orderBy: { timestamp: 'desc' } },
+        timers:    { where: { isActive: true }, include: { safeZone: true, contacts: true } },
+        contacts:  true,
+        safeZones: true,
+      },
+    });
+
+    if (!device) {
+      return res.status(404).json({ error: 'Dispositivo não encontrado.' });
+    }
+
+    // Nunca expõe o fcmToken para o frontend
+    const { fcmToken: _removed, ...deviceSafe } = device as any;
+    res.json(deviceSafe);
+  } catch (error) {
+    console.error('[ADMIN] Erro ao buscar device:', error);
+    res.status(500).json({ error: 'Erro interno ao buscar dispositivo.' });
+  }
+});
+
+/**
+ * POST /admin/devices/:deviceId/resolve
+ * Cancela o alarme: define status SECURE e resolve todos os PanicEvents pendentes.
+ */
+app.post('/admin/devices/:deviceId/resolve', verificarAdminKey, async (req: Request, res: Response) => {
+  const { deviceId } = req.params;
+
+  if (!isValidUUID(deviceId)) {
+    return res.status(400).json({ error: 'ID de dispositivo inválido.' });
+  }
+
+  try {
+    await prisma.device.update({
+      where: { id: deviceId },
+      data: { status: 'SECURE' },
+    });
+
+    const { count } = await prisma.panicEvent.updateMany({
+      where: { deviceId, resolved: false },
+      data: { resolved: true },
+    });
+
+    console.log(`🛡️ [ADMIN] Alarme de [${deviceId}] cancelado. ${count} PanicEvent(s) resolvido(s).`);
+    res.json({ message: 'Alarme cancelado com sucesso.', resolvedPanics: count });
+  } catch (error: any) {
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'Dispositivo não encontrado.' });
+    }
+    console.error('[ADMIN] Erro ao resolver alarme:', error);
+    res.status(500).json({ error: 'Erro interno ao cancelar alarme.' });
+  }
+});
+
+/**
+ * POST /admin/devices/:deviceId/panic
+ * Força o bloqueio: define status PANICO, cria PanicEvent e envia FCM Lock.
+ */
+app.post('/admin/devices/:deviceId/panic', verificarAdminKey, async (req: Request, res: Response) => {
+  const { deviceId } = req.params;
+
+  if (!isValidUUID(deviceId)) {
+    return res.status(400).json({ error: 'ID de dispositivo inválido.' });
+  }
+
+  try {
+    const device = await prisma.device.update({
+      where: { id: deviceId },
+      data: { status: 'PANICO' },
+    });
+
+    await prisma.panicEvent.create({
+      data: { deviceId, triggerType: 'ADMIN_FORCED_PANIC' },
+    });
+
+    // Dispara FCM usando o token real do device (se disponível)
+    console.log(`💀 [ADMIN] Bloqueio forçado para [${deviceId}] pelo painel admin.`);
+    if (!device.fcmToken) {
+      console.warn(`⚠️ [ADMIN] Dispositivo [${deviceId}] não possui FCM Token. O bloqueio ocorrerá apenas na próxima sincronização do app.`);
+    } else {
+      try {
+        const fcmResponse = await admin.messaging().send({ data: { comando: 'LOCK' }, token: device.fcmToken });
+        console.log(`✅ [ADMIN] FCM LOCK enviado. ID: ${fcmResponse}`);
+      } catch (fcmError) {
+        console.error(`❌ [ADMIN] Falha no FCM (device pode estar offline):`, fcmError);
+      }
+    }
+
+    res.json({ message: 'Bloqueio forçado ativado.' });
+  } catch (error: any) {
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'Dispositivo não encontrado.' });
+    }
+    console.error('[ADMIN] Erro ao forçar pânico:', error);
+    res.status(500).json({ error: 'Erro interno ao forçar bloqueio.' });
   }
 });
 

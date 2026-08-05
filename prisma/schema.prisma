@@ -3,23 +3,25 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
 // 📱 Tabela Central de Dispositivos
 model Device {
-  id          String   @id @default(uuid()) // O UUID único que acabamos de criar no Android
-  fcmToken    String?  // O token gigante do Firebase para aquele celular específico
-  status      Status   @default(SECURE)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        String   @id @default(uuid()) // O UUID único que o Android cria
+  fcmToken  String?  // O token gigante do Firebase para aquele celular específico
+  status    Status   @default(SECURE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relacionamentos
-  locations   Location[]
-  timers      Timer[]
-  panics      PanicEvent[]
+  locations  Location[]
+  timers     Timer[]
+  panics     PanicEvent[]
+  contacts   Contact[]
+  safeZones  SafeZone[]
 }
 
 // Estados possíveis de um celular na Torre de Controle
@@ -31,28 +33,68 @@ enum Status {
 
 // 📍 Histórico de Rastreio GPS (A Rota de Resgate)
 model Location {
-  id          Int      @id @default(autoincrement())
-  latitude    Float
-  longitude   Float
-  timestamp   DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  latitude  Float
+  longitude Float
+  timestamp DateTime @default(now())
 
-  deviceId    String
-  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  deviceId String
+  device   Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
   @@index([deviceId, timestamp(sort: Desc)]) // Índice para buscas ultra-rápidas na Torre de Controle
 }
 
-// ⏰ Timers de Segurança Inteligentes
+// ⏰ Smart Timer — Registro persistente de evento com prazo de segurança
 model Timer {
-  id          Int      @id @default(autoincrement())
-  expiresAt   DateTime // O momento exato em que o servidor deve disparar o alarme
-  safeLat     Float
-  safeLng     Float
-  safeRadius  Int
-  isActive    Boolean  @default(true)
+  id              Int      @id @default(autoincrement())
+  eventName       String   // Nome do evento, ex: "Indo para a academia"
+  targetTimestamp DateTime // Timestamp exato em que o alarme deve ser auditado pelo CronJob
+  checkedIn       Boolean  @default(false) // true = usuária desarmou manualmente. A bomba foi desativada.
+  isActive        Boolean  @default(true)  // false = timer encerrado (por checkin ou por expiração processada)
+  createdAt       DateTime @default(now())
 
-  deviceId    String
-  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  // FK para o dispositivo dono deste timer
+  deviceId String
+  device   Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  // FK opcional para a Zona Segura de destino
+  safeZoneId String?
+  safeZone   SafeZone? @relation(fields: [safeZoneId], references: [id], onDelete: SetNull)
+
+  // Relação N:M: quais contatos devem ser notificados SE este timer expirar sem check-in
+  contacts Contact[] @relation("TimerContacts")
+
+  @@index([isActive, targetTimestamp]) // Índice vital para o futuro CronJob de auditoria
+}
+
+// 👥 Contatos de Emergência do Usuário
+model Contact {
+  id    String @id @default(uuid())
+  name  String
+  phone String
+
+  // FK para o dispositivo dono deste contato
+  deviceId String
+  device   Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  // Relação N:M inversa com Timer
+  timers Timer[] @relation("TimerContacts")
+}
+
+// 🗺️ Zonas Seguras cadastradas pelo Usuário
+model SafeZone {
+  id           String @id @default(uuid())
+  name         String  // Ex: "Casa", "Trabalho", "Academia"
+  latitude     Float
+  longitude    Float
+  radiusMeters Int     // Raio em metros considerado "dentro da zona segura"
+
+  // FK para o dispositivo dono desta zona
+  deviceId String
+  device   Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  // Um timer pode ter uma zona segura associada
+  timers Timer[]
 }
 
 // 🚨 Registro de Auditoria de Pânicos
@@ -62,6 +104,6 @@ model PanicEvent {
   timestamp   DateTime @default(now())
   resolved    Boolean  @default(false) // Se o admin na Torre de Controle já validou/cancelou
 
-  deviceId    String
-  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  deviceId String
+  device   Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 }
