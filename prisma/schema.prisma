@@ -8,6 +8,48 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+// 🛡️ Tabela de Administradores (Torre de Controle Web)
+model Admin {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(MONITOR)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+enum Role {
+  ADMIN
+  MONITOR
+}
+
+// 👤 Tabela de Usuários (Donos dos Celulares)
+model User {
+  id            String    @id @default(uuid())
+  name          String
+  email         String    @unique
+  passwordHash  String    // bcrypt hash
+  phone         String
+  cpf           String    @unique               // Obrigatório
+  birthDate     DateTime?
+  profilePhoto  String?   // URL Supabase Storage
+  city          String?   // Contexto para dossier
+  
+  pinSeguro     String    // PIN principal — abre o app e confirma monitoramento
+  pinTeatro     String    // PIN teatro — abre Cofre Falso (bloqueia 15 min depois)
+  pinEmergencia String?   // PIN bloqueio instantâneo
+  emergencyNote String?   // Mensagem para dossier
+  
+  emailVerified Boolean   @default(false)
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  devices        Device[]
+  unlockRequests UnlockRequest[]
+}
+
 // 📱 Tabela Central de Dispositivos
 model Device {
   id        String   @id @default(uuid()) // O UUID único que o Android cria
@@ -15,6 +57,10 @@ model Device {
   status    Status   @default(SECURE)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // Dono do dispositivo
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   // Relacionamentos
   locations  Location[]
@@ -29,6 +75,25 @@ enum Status {
   SECURE
   ALERTA
   PANICO
+}
+
+// Pedidos de desbloqueio remoto
+model UnlockRequest {
+  id          String   @id @default(uuid())
+  status      UnlockStatus @default(PENDING)   // PENDING, APPROVED, DENIED
+  selfieUrl   String?                          // Foto enviada pelo usuário
+  adminNote   String?                          // Nota do admin
+  createdAt   DateTime @default(now())
+  resolvedAt  DateTime?
+
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum UnlockStatus {
+  PENDING
+  APPROVED
+  DENIED
 }
 
 // 📍 Histórico de Rastreio GPS (A Rota de Resgate)

@@ -50,27 +50,45 @@ async function enviarComandoLockFCM(fcmToken: string, deviceId: string, triggerT
 
 /**
  * Simula o alerta para os contatos de emergência vinculados ao timer.
- * Futuramente este bloco chamará uma API de SMS/WhatsApp real.
+ * Agora integrado com n8n via Webhook.
  */
-function alertarContatosDeEmergencia(
+async function alertarContatosDeEmergencia(
   deviceId: string,
-  contatos: Array<{ name: string; phone: string }>
-): void {
-  const linkResgate = `https://SEU_URL_DO_RENDER.onrender.com/resgate/${deviceId}`;
+  contatos: Array<{ name: string; phone: string }>,
+  eventName: string,
+  userName: string = 'Seu contato'
+): Promise<void> {
+  const linkResgate = `https://guardiao-public.onrender.com/resgate/${deviceId}`;
+  const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || 'http://localhost:5678/webhook/guardiao-alerta';
 
   if (contatos.length === 0) {
     console.warn(`⚠️ [AUDITOR] Timer de [${deviceId}] expirou em perigo, mas sem contatos cadastrados para notificar.`);
     return;
   }
 
-  contatos.forEach((contato) => {
+  for (const contato of contatos) {
     console.log(`\n======================================================`);
-    console.log(`📱 SMS SIMULADO → ${contato.name} (${contato.phone}):`);
+    console.log(`📱 ALERTA N8N → ${contato.name} (${contato.phone}):`);
     console.log(`"Alerta Guardião: A usuária não chegou ao destino no horário combinado.`);
     console.log(`Por favor, acesse o painel urgente para verificar:`);
     console.log(`👉 ${linkResgate} "`);
     console.log(`======================================================\n`);
-  });
+
+    try {
+      // Dispara o webhook para o n8n
+      const axios = require('axios');
+      await axios.post(N8N_WEBHOOK_URL, {
+        contactPhone: contato.phone,
+        contactName: contato.name,
+        userName: userName,
+        eventName: eventName,
+        rescueLink: linkResgate
+      });
+      console.log(`✅ [AUDITOR] Webhook n8n disparado com sucesso para ${contato.name}`);
+    } catch (error: any) {
+      console.error(`❌ [AUDITOR] Falha ao disparar webhook para n8n:`, error.message);
+    }
+  }
 }
 
 // ==========================================
@@ -92,7 +110,9 @@ async function auditarTimers(): Promise<void> {
       targetTimestamp: { lte: new Date() },
     },
     include: {
-      device: true,       // Precisamos do fcmToken e do deviceId
+      device: {           // Precisamos do fcmToken, deviceId e user
+        include: { user: true }
+      },
       safeZone: true,     // Precisamos das coordenadas e raio da zona segura
       contacts: {         // Precisamos dos dados para alertar
         select: { id: true, name: true, phone: true },
@@ -188,7 +208,12 @@ async function auditarTimers(): Promise<void> {
       }
 
       // 4e. Alerta os contatos de emergência vinculados ao timer
-      alertarContatosDeEmergencia(timer.deviceId, timer.contacts);
+      await alertarContatosDeEmergencia(
+        timer.deviceId, 
+        timer.contacts, 
+        timer.eventName, 
+        timer.device.user?.name || 'Seu contato'
+      );
 
     } catch (error) {
       // Falha isolada: loga com contexto e continua para o próximo timer

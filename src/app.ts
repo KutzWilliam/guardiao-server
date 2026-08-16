@@ -2,7 +2,10 @@ import express, { Request, Response, NextFunction } from 'express';
 import * as admin from 'firebase-admin';
 import * as fs from 'fs';
 import * as path from 'path';
+import multer from 'multer';
 import { PrismaClient } from '@prisma/client';
+import authRoutes from './routes/auth.routes';
+import { requireAuth, AuthRequest } from './middlewares/auth.middleware';
 
 const keyPath = path.resolve(__dirname, '../firebase-key.json');
 
@@ -19,8 +22,27 @@ if (fs.existsSync(keyPath)) {
 }
 
 const app = express();
+
+// FASE F - Segurança em Camadas
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+
+// 1. Helmet: Protege contra XSS, Sniffing e configura dezenas de Headers HTTP seguros
+app.use(helmet());
+
+// 2. Rate Limiting Geral: Protege contra DDoS e Força Bruta
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 100, // limite de 100 requisições por IP a cada 15 minutos
+  message: { error: 'Muitas requisições originadas deste IP, por favor tente novamente mais tarde.' }
+});
+app.use(limiter);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Configuração do multer para upload de arquivos em memória
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Inicialização do cliente de Banco de Dados
 const prisma = new PrismaClient();
@@ -81,17 +103,16 @@ function alertarContatoDeEmergencia(deviceId: string) {
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 
-app.post('/auth/register', async (req: Request, res: Response) => {
-  res.status(201).json({ message: 'Pronto para uso' });
-});
+app.use('/auth', authRoutes);
 
-app.post('/location/update', async (req: Request, res: Response) => {
+app.post('/location/update', requireAuth, async (req: AuthRequest, res: Response) => {
   const { deviceId, latitude, longitude } = req.body;
+  const userId = req.user!.id;
   try {
     await prisma.device.upsert({
       where: { id: deviceId },
-      update: {},
-      create: { id: deviceId }
+      update: { userId },
+      create: { id: deviceId, userId }
     });
 
     await prisma.location.create({
@@ -107,19 +128,21 @@ app.post('/location/update', async (req: Request, res: Response) => {
 // SINCRONIZAÇÃO EM NUVEM (Geofences e Contatos)
 // ==========================================
 
-app.post('/sync/safezone', async (req: Request, res: Response) => {
+app.post('/sync/safezone', requireAuth, async (req: AuthRequest, res: Response) => {
   const { id, deviceId, name, latitude, longitude, radiusMeters } = req.body;
+  const userId = req.user!.id;
   
   if (!id || !deviceId || !name || latitude == null || longitude == null || radiusMeters == null) {
-    return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+    res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+    return;
   }
 
   try {
     // Garante que o dispositivo existe
     await prisma.device.upsert({
       where: { id: deviceId },
-      update: {},
-      create: { id: deviceId }
+      update: { userId },
+      create: { id: deviceId, userId }
     });
 
     const safeZone = await prisma.safeZone.upsert({
@@ -135,19 +158,21 @@ app.post('/sync/safezone', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/sync/contact', async (req: Request, res: Response) => {
+app.post('/sync/contact', requireAuth, async (req: AuthRequest, res: Response) => {
   const { id, deviceId, name, phone } = req.body;
+  const userId = req.user!.id;
   
   if (!id || !deviceId || !name || !phone) {
-    return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+    res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+    return;
   }
 
   try {
     // Garante que o dispositivo existe
     await prisma.device.upsert({
       where: { id: deviceId },
-      update: {},
-      create: { id: deviceId }
+      update: { userId },
+      create: { id: deviceId, userId }
     });
 
     const contact = await prisma.contact.upsert({
@@ -163,17 +188,19 @@ app.post('/sync/contact', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/sync/fcm', async (req: Request, res: Response) => {
+app.post('/sync/fcm', requireAuth, async (req: AuthRequest, res: Response) => {
   const { deviceId, fcmToken } = req.body;
+  const userId = req.user!.id;
   if (!deviceId || !fcmToken) {
-    return res.status(400).json({ error: 'deviceId e fcmToken são obrigatórios.' });
+    res.status(400).json({ error: 'deviceId e fcmToken são obrigatórios.' });
+    return;
   }
 
   try {
     await prisma.device.upsert({
       where: { id: deviceId },
-      update: { fcmToken },
-      create: { id: deviceId, fcmToken }
+      update: { fcmToken, userId },
+      create: { id: deviceId, fcmToken, userId }
     });
     return res.status(200).json({ message: 'FCM Token sincronizado.' });
   } catch (error) {
@@ -201,31 +228,35 @@ app.post('/sync/fcm', async (req: Request, res: Response) => {
  *   contactIds: string[] (UUIDs dos Contacts a notificar caso expire)
  * }
  */
-app.post('/timer/start', async (req: Request, res: Response) => {
+app.post('/timer/start', requireAuth, async (req: AuthRequest, res: Response) => {
   const { deviceId, eventName, targetTimestamp, safeZoneId, contactIds } = req.body;
+  const userId = req.user!.id;
 
   // Validação básica dos campos obrigatórios
   if (!deviceId || !eventName || !targetTimestamp) {
-    return res.status(400).json({
+    res.status(400).json({
       error: 'Campos obrigatórios ausentes: deviceId, eventName, targetTimestamp.'
     });
+    return;
   }
 
   const parsedTimestamp = new Date(targetTimestamp);
   if (isNaN(parsedTimestamp.getTime())) {
-    return res.status(400).json({ error: 'targetTimestamp inválido. Use o formato ISO 8601.' });
+    res.status(400).json({ error: 'targetTimestamp inválido. Use o formato ISO 8601.' });
+    return;
   }
 
   if (parsedTimestamp <= new Date()) {
-    return res.status(400).json({ error: 'targetTimestamp deve ser uma data futura.' });
+    res.status(400).json({ error: 'targetTimestamp deve ser uma data futura.' });
+    return;
   }
 
   try {
     // Garante que o dispositivo existe no banco antes de criar o timer
     await prisma.device.upsert({
       where: { id: deviceId },
-      update: {},
-      create: { id: deviceId }
+      update: { userId },
+      create: { id: deviceId, userId }
     });
 
     // Monta o bloco de conexão N:M com os contatos (se fornecidos)
@@ -276,11 +307,12 @@ app.post('/timer/start', async (req: Request, res: Response) => {
  *
  * Payload: { deviceId: string, timerId: number }
  */
-app.post('/timer/checkin', async (req: Request, res: Response) => {
+app.post('/timer/checkin', requireAuth, async (req: AuthRequest, res: Response) => {
   const { deviceId, timerId } = req.body;
 
   if (!deviceId || !timerId) {
-    return res.status(400).json({ error: 'Campos obrigatórios ausentes: deviceId, timerId.' });
+    res.status(400).json({ error: 'Campos obrigatórios ausentes: deviceId, timerId.' });
+    return;
   }
 
   try {
@@ -326,15 +358,16 @@ app.post('/timer/checkin', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/panic/trigger', async (req: Request, res: Response) => {
+app.post('/panic/trigger', requireAuth, async (req: AuthRequest, res: Response) => {
   const { deviceId, triggerType } = req.body;
+  const userId = req.user!.id;
   try {
     const statusAtual = (triggerType === "PIN_PANICO_IMEDIATO" || triggerType === "GATILHO_VOZ_OFFLINE") ? 'PANICO' : 'ALERTA';
 
     await prisma.device.upsert({
       where: { id: deviceId },
-      update: { status: statusAtual },
-      create: { id: deviceId, status: statusAtual }
+      update: { status: statusAtual, userId },
+      create: { id: deviceId, status: statusAtual, userId }
     });
 
     await prisma.panicEvent.create({
@@ -350,9 +383,88 @@ app.post('/panic/trigger', async (req: Request, res: Response) => {
   }
 });
 
+app.post('/panic/unlock/biometrics', requireAuth, async (req: AuthRequest, res: Response) => {
+  const { deviceId } = req.body;
+  const userId = req.user!.id;
+
+  try {
+    const device = await prisma.device.findFirst({ where: { id: deviceId, userId } });
+    if (!device) {
+      res.status(403).json({ error: 'Acesso negado.' });
+      return;
+    }
+
+    await prisma.device.update({
+      where: { id: deviceId },
+      data: { status: 'SECURE' }
+    });
+
+    await prisma.panicEvent.updateMany({
+      where: { deviceId, resolved: false },
+      data: { resolved: true }
+    });
+
+    res.status(200).json({ message: 'Pânico desativado via biometria com sucesso.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro interno ao desativar pânico.' });
+  }
+});
+
+app.post('/panic/unlock/request', upload.single('selfie'), async (req: Request, res: Response) => {
+  const { email, password, cpf } = req.body;
+  const selfie = req.file;
+
+  if (!email || !password || !cpf || !selfie) {
+    res.status(400).json({ error: 'Todos os campos e a selfie são obrigatórios.' });
+    return;
+  }
+
+  try {
+    const user = await prisma.user.findFirst({ where: { email, cpf } });
+    if (!user) {
+      res.status(404).json({ error: 'Usuário não encontrado com estes dados.' });
+      return;
+    }
+
+    // Cria a requisição (Numa implementação real, fariamos upload pro Supabase aqui)
+    await prisma.unlockRequest.create({
+      data: {
+        userId: user.id,
+        status: 'PENDING',
+        selfieUrl: 'https://placeholder.com/selfie.jpg', // Temporário para MVP
+      }
+    });
+
+    res.status(201).json({ message: 'Solicitação criada.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao criar solicitação.' });
+  }
+});
+
 // ==========================================
-// O PAINEL DE RESGATE (Frontend Rápido)
+// O PAINEL DE RESGATE (API para guardiao-public)
 // ==========================================
+
+app.get('/resgate/info/:deviceId', async (req: Request, res: Response) => {
+  const { deviceId } = req.params;
+
+  try {
+    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+    if (!device) {
+      res.status(404).json({ error: 'Aparelho não encontrado.' });
+      return;
+    }
+
+    const lastLocation = await prisma.location.findFirst({
+      where: { deviceId },
+      orderBy: { timestamp: 'desc' }
+    });
+
+    res.status(200).json({ device, lastLocation });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
 
 app.get('/resgate/:deviceId', async (req: Request, res: Response) => {
   const { deviceId } = req.params;
@@ -431,11 +543,11 @@ app.post('/resgate/action', async (req: Request, res: Response) => {
       console.log(`\n💀 A amiga de [${deviceId}] CONFIRMOU O PÂNICO! Gravado no BD.`);
       enviarComandoLockFCM(deviceId, "CONTATO_CONFIRMOU_RESGATE");
 
-      res.send("<h2 style='color:red; text-align:center; padding:50px; background-color:#121212;'>PÂNICO CONFIRMADO! O Celular foi bloqueado. Entregue os dados à polícia.</h2>");
+      res.status(200).json({ message: 'PÂNICO CONFIRMADO!' });
     }
   } catch (error) {
     console.error("Erro ao registrar ação de resgate:", error);
-    res.status(500).send("Erro ao processar a requisição.");
+    res.status(500).json({ error: "Erro ao processar a requisição." });
   }
 });
 
