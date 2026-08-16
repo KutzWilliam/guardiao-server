@@ -55,7 +55,7 @@ router.post('/register', async (req: Request, res: Response) => {
     res.status(201).json({ message: 'Conta criada com sucesso', token, userId: user.id });
   } catch (error: any) {
     if (error instanceof z.ZodError) {
-      res.status(400).json({ error: (error as z.ZodError).errors });
+      res.status(400).json({ error: error.issues });
       return;
     }
     console.error(error);
