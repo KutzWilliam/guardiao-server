@@ -109,4 +109,31 @@ router.get('/me', requireAuth, async (req: AuthRequest, res: Response) => {
   }
 });
 
+router.post('/forgot-password', async (req: Request, res: Response) => {
+  try {
+    const { cpf } = req.body;
+    if (!cpf) {
+      res.status(400).json({ error: 'CPF é obrigatório.' });
+      return;
+    }
+
+    const user = await prisma.user.findFirst({ where: { cpf } });
+    if (!user) {
+      // Para fins de segurança, geralmente retornamos uma mensagem de sucesso igual, 
+      // mas como o app pede para retornar apenas se o cpf for válido, vamos retornar 200 sempre com msg ambígua
+      // ou podemos retornar 404 para o app saber. O requisito diz "após o cpf for valido será enviado um email".
+      res.status(404).json({ error: 'CPF não encontrado.' });
+      return;
+    }
+
+    // MVP: Apenas simular o envio de email.
+    console.log(`[AUTH] Simulando envio de e-mail de recuperação para: ${user.email}`);
+
+    res.json({ message: 'Se o CPF for válido, um e-mail de recuperação foi enviado.' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Erro interno.' });
+  }
+});
+
 export default router;
