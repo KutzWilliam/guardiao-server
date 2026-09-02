@@ -57,6 +57,7 @@ export const mockPrisma = {
   unlockRequest: {
     create: jest.fn(),
     findFirst: jest.fn(),
+    findUnique: jest.fn(),
     findMany: jest.fn(),
     update: jest.fn(),
   },

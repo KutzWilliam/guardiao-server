@@ -112,4 +112,60 @@ describe('Sync Endpoints (SafeZones, Contacts, FCM)', () => {
       expect(res.body.message).toMatch(/FCM Token sincronizado/i);
     });
   });
+
+  describe('GET & DELETE /sync/safezone', () => {
+    it('deve listar safezones de um dispositivo', async () => {
+      mockPrisma.safeZone.findMany.mockResolvedValue([
+        { id: 'zone-1', name: 'Casa', latitude: -23.55, longitude: -46.63, radiusMeters: 100, deviceId: 'device-123' },
+      ]);
+
+      const res = await request(app)
+        .get('/sync/safezone/device-123')
+        .set('Authorization', `Bearer ${validToken}`);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body[0].name).toBe('Casa');
+    });
+
+    it('deve deletar uma safezone existente', async () => {
+      mockPrisma.safeZone.delete.mockResolvedValue({ id: 'zone-1' });
+
+      const res = await request(app)
+        .delete('/sync/safezone/zone-1')
+        .set('Authorization', `Bearer ${validToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toMatch(/SafeZone removida/i);
+      expect(mockPrisma.safeZone.delete).toHaveBeenCalledWith({ where: { id: 'zone-1' } });
+    });
+  });
+
+  describe('GET & DELETE /sync/contact', () => {
+    it('deve listar contatos de um dispositivo', async () => {
+      mockPrisma.contact.findMany.mockResolvedValue([
+        { id: 'contact-1', name: 'Mãe', phone: '11999998888', deviceId: 'device-123' },
+      ]);
+
+      const res = await request(app)
+        .get('/sync/contact/device-123')
+        .set('Authorization', `Bearer ${validToken}`);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body[0].name).toBe('Mãe');
+    });
+
+    it('deve deletar um contato existente', async () => {
+      mockPrisma.contact.delete.mockResolvedValue({ id: 'contact-1' });
+
+      const res = await request(app)
+        .delete('/sync/contact/contact-1')
+        .set('Authorization', `Bearer ${validToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toMatch(/Contato removido/i);
+      expect(mockPrisma.contact.delete).toHaveBeenCalledWith({ where: { id: 'contact-1' } });
+    });
+  });
 });

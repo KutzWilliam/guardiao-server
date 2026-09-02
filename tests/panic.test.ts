@@ -118,4 +118,61 @@ describe('Panic Endpoints', () => {
       expect(mockPrisma.device.update).not.toHaveBeenCalled();
     });
   });
+
+  describe('POST /panic/unlock/request (Upload de Selfie)', () => {
+    it('deve rejeitar se faltar campos obrigatórios ou a selfie', async () => {
+      const res = await request(app)
+        .post('/panic/unlock/request')
+        .field('email', 'maria@example.com')
+        .field('password', 'senha123');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/obrigatórios/i);
+    });
+
+    it('deve retornar 404 se usuário não for encontrado', async () => {
+      mockPrisma.user.findFirst.mockResolvedValue(null);
+
+      const res = await request(app)
+        .post('/panic/unlock/request')
+        .field('email', 'inexistente@example.com')
+        .field('password', 'senha123')
+        .field('cpf', '12345678900')
+        .attach('selfie', Buffer.from('fake image data'), 'selfie.jpg');
+
+      expect(res.status).toBe(404);
+    });
+
+    it('deve criar solicitação de desbloqueio com sucesso e gerar selfieUrl', async () => {
+      const bcrypt = require('bcryptjs');
+      const hash = await bcrypt.hash('senha123', 8);
+
+      mockPrisma.user.findFirst.mockResolvedValue({
+        id: 'user-123',
+        name: 'Maria Silva',
+        email: 'maria@example.com',
+        cpf: '12345678900',
+        passwordHash: hash,
+      });
+
+      mockPrisma.unlockRequest.create.mockResolvedValue({
+        id: 'req-abc',
+        userId: 'user-123',
+        status: 'PENDING',
+        selfieUrl: 'https://placeholder.com/selfies/user-123.jpg',
+      });
+
+      const res = await request(app)
+        .post('/panic/unlock/request')
+        .field('email', 'maria@example.com')
+        .field('password', 'senha123')
+        .field('cpf', '12345678900')
+        .attach('selfie', Buffer.from('fake image data'), 'selfie.jpg');
+
+      expect(res.status).toBe(201);
+      expect(res.body.message).toMatch(/Solicitação criada com sucesso/i);
+      expect(res.body.requestId).toBe('req-abc');
+      expect(res.body.selfieUrl).toBeDefined();
+    });
+  });
 });

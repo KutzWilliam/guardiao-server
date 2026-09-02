@@ -56,4 +56,25 @@ describe('Location Endpoints', () => {
       expect(mockPrisma.location.create).not.toHaveBeenCalled();
     });
   });
+
+  describe('GET /location/:deviceId', () => {
+    it('deve retornar lista de localizações de um dispositivo', async () => {
+      mockPrisma.location.findMany.mockResolvedValue([
+        { id: 1, deviceId: 'device-abc', latitude: -23.55, longitude: -46.63, timestamp: new Date() },
+      ]);
+
+      const res = await request(app)
+        .get('/location/device-abc')
+        .set('Authorization', `Bearer ${validToken}`);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body[0].deviceId).toBe('device-abc');
+      expect(mockPrisma.location.findMany).toHaveBeenCalledWith({
+        where: { deviceId: 'device-abc' },
+        orderBy: { timestamp: 'desc' },
+        take: 100,
+      });
+    });
+  });
 });

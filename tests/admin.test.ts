@@ -129,4 +129,140 @@ describe('Admin Tower Control Endpoints', () => {
       });
     });
   });
+
+  describe('GET /admin/devices/:deviceId/locations', () => {
+    it('deve retornar o histórico de localizações para um dispositivo válido', async () => {
+      const mockLocations = [
+        { id: 1, latitude: -23.55, longitude: -46.63, timestamp: new Date(), deviceId: VALID_UUID },
+        { id: 2, latitude: -23.56, longitude: -46.64, timestamp: new Date(), deviceId: VALID_UUID },
+      ];
+      mockPrisma.location.findMany.mockResolvedValue(mockLocations);
+
+      const res = await request(app)
+        .get(`/admin/devices/${VALID_UUID}/locations`)
+        .set('X-Admin-Key', ADMIN_KEY);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body.length).toBe(2);
+      expect(mockPrisma.location.findMany).toHaveBeenCalledWith({
+        where: { deviceId: VALID_UUID },
+        orderBy: { timestamp: 'desc' },
+        take: 500,
+      });
+    });
+
+    it('deve rejeitar deviceId inválido', async () => {
+      const res = await request(app)
+        .get('/admin/devices/id-invalido/locations')
+        .set('X-Admin-Key', ADMIN_KEY);
+
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('GET /admin/users', () => {
+    it('deve listar usuários cadastrados', async () => {
+      mockPrisma.user.findMany.mockResolvedValue([
+        {
+          id: 'user-1',
+          name: 'Maria Silva',
+          email: 'maria@example.com',
+          phone: '11999999999',
+          cpf: '12345678900',
+          isActive: true,
+          devices: [{ id: VALID_UUID, status: 'SECURE' }],
+        },
+      ]);
+
+      const res = await request(app)
+        .get('/admin/users')
+        .set('X-Admin-Key', ADMIN_KEY);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body[0].name).toBe('Maria Silva');
+    });
+  });
+
+  describe('GET /admin/incidents', () => {
+    it('deve listar os incidentes de pânico', async () => {
+      mockPrisma.panicEvent.findMany.mockResolvedValue([
+        {
+          id: 10,
+          triggerType: 'PIN_PANICO_IMEDIATO',
+          timestamp: new Date(),
+          resolved: false,
+          device: { id: VALID_UUID, status: 'PANICO', user: { name: 'Maria' } },
+        },
+      ]);
+
+      const res = await request(app)
+        .get('/admin/incidents')
+        .set('X-Admin-Key', ADMIN_KEY);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body[0].triggerType).toBe('PIN_PANICO_IMEDIATO');
+    });
+  });
+
+  describe('GET & PUT /admin/unlock-requests', () => {
+    it('deve listar solicitações de desbloqueio com filtro', async () => {
+      mockPrisma.unlockRequest.findMany.mockResolvedValue([
+        {
+          id: 'req-1',
+          status: 'PENDING',
+          user: { name: 'Maria', cpf: '123' },
+        },
+      ]);
+
+      const res = await request(app)
+        .get('/admin/unlock-requests?status=PENDING')
+        .set('X-Admin-Key', ADMIN_KEY);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body[0].id).toBe('req-1');
+    });
+
+    it('deve aprovar solicitação de desbloqueio e desativar o pânico do dispositivo', async () => {
+      mockPrisma.unlockRequest.findUnique.mockResolvedValue({
+        id: 'req-1',
+        status: 'PENDING',
+        user: {
+          id: 'user-1',
+          devices: [{ id: VALID_UUID, fcmToken: null }],
+        },
+      });
+      mockPrisma.unlockRequest.update.mockResolvedValue({
+        id: 'req-1',
+        status: 'APPROVED',
+      });
+      mockPrisma.device.update.mockResolvedValue({ id: VALID_UUID, status: 'SECURE' });
+      mockPrisma.panicEvent.updateMany.mockResolvedValue({ count: 1 });
+
+      const res = await request(app)
+        .put('/admin/unlock-requests/req-1')
+        .set('X-Admin-Key', ADMIN_KEY)
+        .send({ action: 'APPROVED', adminNote: 'Selfie verificada' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toMatch(/aprovada com sucesso/i);
+      expect(mockPrisma.device.update).toHaveBeenCalledWith({
+        where: { id: VALID_UUID },
+        data: { status: 'SECURE' },
+      });
+    });
+
+    it('deve negar ação inválida', async () => {
+      const res = await request(app)
+        .put('/admin/unlock-requests/req-1')
+        .set('X-Admin-Key', ADMIN_KEY)
+        .send({ action: 'INVALID_ACTION' });
+
+      expect(res.status).toBe(400);
+    });
+  });
 });
+

@@ -4,8 +4,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import multer from 'multer';
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 import authRoutes from './routes/auth.routes';
 import { requireAuth, AuthRequest } from './middlewares/auth.middleware';
+import { alertarContatosDeEmergencia } from './services/notificationService';
+import { uploadSelfie } from './services/supabaseStorage';
 
 const keyPath = path.resolve(__dirname, '../firebase-key.json');
 
@@ -85,17 +88,10 @@ async function enviarComandoLockFCM(deviceId: string, triggerType: string) {
 }
 
 /**
- * Alerta um contato de emergência com o link de resgate.
- * Preservado aqui pois será chamado pelo futuro CronJob de auditoria de timers.
+ * Alerta os contatos de emergência vinculados ao dispositivo via n8n webhook.
  */
-function alertarContatoDeEmergencia(deviceId: string) {
-  const linkResgate = `https://SEU_URL_DO_RENDER.onrender.com/resgate/${deviceId}`;
-  console.log(`\n======================================================`);
-  console.log(`📱 SMS SIMULADO ENVIADO PARA A AMIGA:`);
-  console.log(`"Alerta Guardião: A usuária não chegou em casa no horário combinado.`);
-  console.log(`Por favor, acesse o painel urgente para verificar:`);
-  console.log(`👉 ${linkResgate} "`);
-  console.log(`======================================================\n`);
+async function alertarContatoDeEmergencia(deviceId: string, motivo: string = 'ALARME_PANICO') {
+  await alertarContatosDeEmergencia(deviceId, motivo);
 }
 
 // ==========================================
@@ -122,6 +118,20 @@ app.post('/location/update', requireAuth, async (req: AuthRequest, res: Response
     res.status(200).json({ message: 'Coordenadas salvas.' });
   } catch (error) {
     res.status(500).json({ error: 'Erro no banco.' });
+  }
+});
+
+app.get('/location/:deviceId', requireAuth, async (req: AuthRequest, res: Response) => {
+  const { deviceId } = req.params;
+  try {
+    const locations = await prisma.location.findMany({
+      where: { deviceId },
+      orderBy: { timestamp: 'desc' },
+      take: 100
+    });
+    return res.status(200).json(locations);
+  } catch (error) {
+    return res.status(500).json({ error: 'Erro interno ao buscar localizações.' });
   }
 });
 
@@ -159,6 +169,35 @@ app.post('/sync/safezone', requireAuth, async (req: AuthRequest, res: Response) 
   }
 });
 
+app.get('/sync/safezone/:deviceId', requireAuth, async (req: AuthRequest, res: Response) => {
+  const { deviceId } = req.params;
+  try {
+    const safeZones = await prisma.safeZone.findMany({
+      where: { deviceId }
+    });
+    return res.status(200).json(safeZones);
+  } catch (error) {
+    console.error('Erro ao listar safezones:', error);
+    return res.status(500).json({ error: 'Erro interno ao listar zonas seguras.' });
+  }
+});
+
+app.delete('/sync/safezone/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  try {
+    await prisma.safeZone.delete({
+      where: { id }
+    });
+    return res.status(200).json({ message: 'SafeZone removida com sucesso.' });
+  } catch (error: any) {
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'SafeZone não encontrada.' });
+    }
+    console.error('Erro ao deletar safezone:', error);
+    return res.status(500).json({ error: 'Erro interno ao remover SafeZone.' });
+  }
+});
+
 app.post('/sync/contact', requireAuth, async (req: AuthRequest, res: Response) => {
   const { id, deviceId, name, phone } = req.body;
   const userId = req.user!.id;
@@ -186,6 +225,35 @@ app.post('/sync/contact', requireAuth, async (req: AuthRequest, res: Response) =
   } catch (error) {
     console.error('Erro no sync de contato:', error);
     return res.status(500).json({ error: 'Erro interno ao sincronizar Contato.' });
+  }
+});
+
+app.get('/sync/contact/:deviceId', requireAuth, async (req: AuthRequest, res: Response) => {
+  const { deviceId } = req.params;
+  try {
+    const contacts = await prisma.contact.findMany({
+      where: { deviceId }
+    });
+    return res.status(200).json(contacts);
+  } catch (error) {
+    console.error('Erro ao listar contatos:', error);
+    return res.status(500).json({ error: 'Erro interno ao listar contatos.' });
+  }
+});
+
+app.delete('/sync/contact/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  try {
+    await prisma.contact.delete({
+      where: { id }
+    });
+    return res.status(200).json({ message: 'Contato removido com sucesso.' });
+  } catch (error: any) {
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'Contato não encontrado.' });
+    }
+    console.error('Erro ao deletar contato:', error);
+    return res.status(500).json({ error: 'Erro interno ao remover contato.' });
   }
 });
 
@@ -359,6 +427,30 @@ app.post('/timer/checkin', requireAuth, async (req: AuthRequest, res: Response) 
   }
 });
 
+app.get('/timer/list', requireAuth, async (req: AuthRequest, res: Response) => {
+  const deviceId = req.query.deviceId as string | undefined;
+  try {
+    const whereClause: any = { isActive: true };
+    if (deviceId) {
+      whereClause.deviceId = deviceId;
+    } else {
+      whereClause.device = { userId: req.user!.id };
+    }
+    const timers = await prisma.timer.findMany({
+      where: whereClause,
+      include: {
+        safeZone: true,
+        contacts: { select: { id: true, name: true, phone: true } }
+      },
+      orderBy: { targetTimestamp: 'asc' }
+    });
+    return res.status(200).json(timers);
+  } catch (error) {
+    console.error('Erro ao listar timers:', error);
+    return res.status(500).json({ error: 'Erro interno ao listar timers.' });
+  }
+});
+
 app.post('/panic/trigger', requireAuth, async (req: AuthRequest, res: Response) => {
   const { deviceId, triggerType } = req.body;
   const userId = req.user!.id;
@@ -377,6 +469,9 @@ app.post('/panic/trigger', requireAuth, async (req: AuthRequest, res: Response) 
 
     if (statusAtual === 'PANICO') {
       enviarComandoLockFCM(deviceId, triggerType);
+      alertarContatosDeEmergencia(deviceId, triggerType).catch((err) => {
+        console.error('Erro assíncrono ao alertar contatos via n8n:', err);
+      });
     }
     res.status(200).json({ message: 'Pânico registrado.' });
   } catch (error) {
@@ -427,17 +522,28 @@ app.post('/panic/unlock/request', upload.single('selfie'), async (req: Request, 
       return;
     }
 
-    // Cria a requisição (Numa implementação real, fariamos upload pro Supabase aqui)
-    await prisma.unlockRequest.create({
+    if (user.passwordHash) {
+      const senhaValida = await bcrypt.compare(password, user.passwordHash);
+      if (!senhaValida) {
+        res.status(401).json({ error: 'Senha incorreta.' });
+        return;
+      }
+    }
+
+    // Upload real para Supabase Storage
+    const selfieUrl = await uploadSelfie(user.id, selfie);
+
+    const unlockReq = await prisma.unlockRequest.create({
       data: {
         userId: user.id,
         status: 'PENDING',
-        selfieUrl: 'https://placeholder.com/selfie.jpg', // Temporário para MVP
+        selfieUrl,
       }
     });
 
-    res.status(201).json({ message: 'Solicitação criada.' });
-  } catch (error) {
+    res.status(201).json({ message: 'Solicitação criada com sucesso.', requestId: unlockReq.id, selfieUrl });
+  } catch (error: any) {
+    console.error('Erro ao processar solicitação de desbloqueio:', error);
     res.status(500).json({ error: 'Erro ao criar solicitação.' });
   }
 });
@@ -712,6 +818,209 @@ app.post('/admin/devices/:deviceId/panic', verificarAdminKey, async (req: Reques
     }
     console.error('[ADMIN] Erro ao forçar pânico:', error);
     res.status(500).json({ error: 'Erro interno ao forçar bloqueio.' });
+  }
+});
+
+/**
+ * GET /admin/devices/:deviceId/locations
+ * Retorna o histórico de localizações do dispositivo (para mapa ao vivo de resgate).
+ */
+app.get('/admin/devices/:deviceId/locations', verificarAdminKey, async (req: Request, res: Response) => {
+  const { deviceId } = req.params;
+
+  if (!isValidUUID(deviceId)) {
+    return res.status(400).json({ error: 'ID de dispositivo inválido.' });
+  }
+
+  try {
+    const locations = await prisma.location.findMany({
+      where: { deviceId },
+      orderBy: { timestamp: 'desc' },
+      take: 500
+    });
+    res.json(locations);
+  } catch (error) {
+    console.error('[ADMIN] Erro ao buscar histórico de localizações:', error);
+    res.status(500).json({ error: 'Erro interno ao buscar localizações.' });
+  }
+});
+
+/**
+ * GET /admin/users
+ * Retorna lista de usuários com dados de perfil e dispositivos vinculados.
+ */
+app.get('/admin/users', verificarAdminKey, async (req: Request, res: Response) => {
+  try {
+    const users = await prisma.user.findMany({
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        cpf: true,
+        city: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+        devices: {
+          select: {
+            id: true,
+            status: true,
+            updatedAt: true
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(users);
+  } catch (error) {
+    console.error('[ADMIN] Erro ao listar usuários:', error);
+    res.status(500).json({ error: 'Erro interno ao listar usuários.' });
+  }
+});
+
+/**
+ * GET /admin/incidents
+ * Retorna lista de eventos de pânico para auditoria e torre de controle.
+ */
+app.get('/admin/incidents', verificarAdminKey, async (req: Request, res: Response) => {
+  try {
+    const incidents = await prisma.panicEvent.findMany({
+      orderBy: { timestamp: 'desc' },
+      take: 200,
+      include: {
+        device: {
+          select: {
+            id: true,
+            status: true,
+            user: {
+              select: {
+                id: true,
+                name: true,
+                phone: true,
+                cpf: true
+              }
+            }
+          }
+        }
+      }
+    });
+    res.json(incidents);
+  } catch (error) {
+    console.error('[ADMIN] Erro ao listar incidentes:', error);
+    res.status(500).json({ error: 'Erro interno ao listar incidentes.' });
+  }
+});
+
+/**
+ * GET /admin/unlock-requests
+ * Retorna pedidos de desbloqueio com dados do solicitante e suporte a filtro por status.
+ */
+app.get('/admin/unlock-requests', verificarAdminKey, async (req: Request, res: Response) => {
+  const { status } = req.query;
+  try {
+    const where: any = {};
+    if (status && (status === 'PENDING' || status === 'APPROVED' || status === 'DENIED')) {
+      where.status = status;
+    }
+    const requests = await prisma.unlockRequest.findMany({
+      where,
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+            cpf: true,
+            devices: {
+              select: {
+                id: true,
+                status: true
+              }
+            }
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(requests);
+  } catch (error) {
+    console.error('[ADMIN] Erro ao listar unlock-requests:', error);
+    res.status(500).json({ error: 'Erro interno ao listar pedidos de desbloqueio.' });
+  }
+});
+
+/**
+ * PUT /admin/unlock-requests/:id
+ * Aprova ou nega solicitação de desbloqueio remoto. Se aprovado, destrava os dispositivos via FCM.
+ */
+app.put('/admin/unlock-requests/:id', verificarAdminKey, async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { action, adminNote } = req.body;
+
+  if (!action || (action !== 'APPROVED' && action !== 'DENIED')) {
+    return res.status(400).json({ error: "Ação inválida. Use 'APPROVED' ou 'DENIED'." });
+  }
+
+  try {
+    const unlockRequest = await prisma.unlockRequest.findUnique({
+      where: { id },
+      include: {
+        user: {
+          include: {
+            devices: true
+          }
+        }
+      }
+    });
+
+    if (!unlockRequest) {
+      return res.status(404).json({ error: 'Pedido de desbloqueio não encontrado.' });
+    }
+
+    const updated = await prisma.unlockRequest.update({
+      where: { id },
+      data: {
+        status: action,
+        adminNote: adminNote || null,
+        resolvedAt: new Date()
+      }
+    });
+
+    if (action === 'APPROVED' && unlockRequest.user?.devices) {
+      for (const device of unlockRequest.user.devices) {
+        await prisma.device.update({
+          where: { id: device.id },
+          data: { status: 'SECURE' }
+        });
+
+        await prisma.panicEvent.updateMany({
+          where: { deviceId: device.id, resolved: false },
+          data: { resolved: true }
+        });
+
+        if (device.fcmToken) {
+          try {
+            await admin.messaging().send({
+              data: { comando: 'UNLOCK' },
+              token: device.fcmToken
+            });
+            console.log(`✅ [ADMIN] Comando UNLOCK via FCM enviado para ${device.id}`);
+          } catch (fcmErr) {
+            console.error(`❌ [ADMIN] Falha ao enviar UNLOCK FCM para ${device.id}:`, fcmErr);
+          }
+        }
+      }
+    }
+
+    res.status(200).json({
+      message: `Solicitação ${action === 'APPROVED' ? 'aprovada' : 'negada'} com sucesso.`,
+      request: updated
+    });
+  } catch (error) {
+    console.error('[ADMIN] Erro ao processar unlock-request:', error);
+    res.status(500).json({ error: 'Erro interno ao processar pedido de desbloqueio.' });
   }
 });
 

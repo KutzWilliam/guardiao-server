@@ -132,4 +132,35 @@ describe('Smart Timer Endpoints', () => {
       expect(res.status).toBe(409);
     });
   });
+
+  describe('GET /timer/list', () => {
+    it('deve listar timers ativos filtrando por deviceId', async () => {
+      mockPrisma.timer.findMany.mockResolvedValue([
+        {
+          id: 1,
+          eventName: 'Caminhada noturna',
+          isActive: true,
+          targetTimestamp: new Date(),
+          contacts: [],
+          safeZone: null,
+        },
+      ]);
+
+      const res = await request(app)
+        .get('/timer/list?deviceId=device-123')
+        .set('Authorization', `Bearer ${validToken}`);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body[0].eventName).toBe('Caminhada noturna');
+      expect(mockPrisma.timer.findMany).toHaveBeenCalledWith({
+        where: { isActive: true, deviceId: 'device-123' },
+        include: {
+          safeZone: true,
+          contacts: { select: { id: true, name: true, phone: true } },
+        },
+        orderBy: { targetTimestamp: 'asc' },
+      });
+    });
+  });
 });
