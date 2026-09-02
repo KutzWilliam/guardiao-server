@@ -30,11 +30,12 @@ import rateLimit from 'express-rate-limit';
 // 1. Helmet: Protege contra XSS, Sniffing e configura dezenas de Headers HTTP seguros
 app.use(helmet());
 
-// 2. Rate Limiting Geral: Protege contra DDoS e Força Bruta
+// 2. Rate Limiting Geral: Protege contra DDoS e Força Bruta (desativado em ambiente de teste)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
   max: 100, // limite de 100 requisições por IP a cada 15 minutos
-  message: { error: 'Muitas requisições originadas deste IP, por favor tente novamente mais tarde.' }
+  message: { error: 'Muitas requisições originadas deste IP, por favor tente novamente mais tarde.' },
+  skip: () => process.env.NODE_ENV === 'test'
 });
 app.use(limiter);
 
