@@ -8,6 +8,7 @@
     "clean": "rimraf dist",
     "build": "npm run clean && prisma generate && tsc",
     "start": "node dist/server.js",
+    "seed": "ts-node-dev --respawn=false --transpile-only prisma/seed.ts",
     "test": "jest"
   },
   "keywords": [],

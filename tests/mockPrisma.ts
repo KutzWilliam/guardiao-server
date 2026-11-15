@@ -26,6 +26,7 @@ export const mockPrisma = {
     create: jest.fn(),
     findFirst: jest.fn(),
     findMany: jest.fn(),
+    deleteMany: jest.fn(),
   },
   panicEvent: {
     create: jest.fn(),

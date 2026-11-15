@@ -99,6 +99,36 @@ describe('Smart Timer Endpoints', () => {
       });
     });
 
+    it('deve desarmar o timer ativo usando apenas deviceId (sem timerId explícito)', async () => {
+      mockPrisma.timer.findFirst.mockResolvedValue({
+        id: 42,
+        deviceId: 'device-123',
+        eventName: 'Trajeto Noturno',
+        isActive: true,
+        checkedIn: false,
+      });
+      mockPrisma.timer.update.mockResolvedValue({
+        id: 42,
+        eventName: 'Trajeto Noturno',
+        isActive: false,
+        checkedIn: true,
+      });
+
+      const res = await request(app)
+        .post('/timer/checkin')
+        .set('Authorization', `Bearer ${validToken}`)
+        .send({
+          deviceId: 'device-123',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toMatch(/Check-in realizado com sucesso/i);
+      expect(mockPrisma.timer.update).toHaveBeenCalledWith({
+        where: { id: 42 },
+        data: { checkedIn: true, isActive: false },
+      });
+    });
+
     it('deve retornar 403 se o timer não pertencer ao dispositivo', async () => {
       mockPrisma.timer.findFirst.mockResolvedValue(null);
 

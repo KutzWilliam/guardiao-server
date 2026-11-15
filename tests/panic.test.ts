@@ -71,6 +71,49 @@ describe('Panic Endpoints', () => {
       expect(res.status).toBe(200);
       expect(res.body.message).toMatch(/Pânico registrado/i);
     });
+
+    it('deve ativar o Modo Teatro (status ALERTA) e criar Timer silencioso de 15 minutos', async () => {
+      mockPrisma.device.upsert.mockResolvedValue({
+        id: 'device-123',
+        status: 'ALERTA',
+        userId: 'user-123',
+      });
+      mockPrisma.panicEvent.create.mockResolvedValue({
+        id: 3,
+        deviceId: 'device-123',
+        triggerType: 'PIN_MODO_TEATRO',
+      });
+      mockPrisma.device.findUnique.mockResolvedValue({
+        id: 'device-123',
+        fcmToken: null,
+        contacts: [{ id: 'c-1', name: 'Mãe', phone: '11999999999' }],
+        user: { name: 'Maria' },
+      });
+      mockPrisma.timer.create.mockResolvedValue({
+        id: 77,
+        eventName: 'Alerta Silencioso (Modo Teatro / Coação)',
+        deviceId: 'device-123',
+      });
+
+      const res = await request(app)
+        .post('/panic/trigger')
+        .set('Authorization', `Bearer ${validToken}`)
+        .send({
+          deviceId: 'device-123',
+          triggerType: 'PIN_MODO_TEATRO',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ALERTA');
+      expect(mockPrisma.timer.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            device: { connect: { id: 'device-123' } },
+            eventName: expect.stringMatching(/Modo Teatro/i),
+          }),
+        })
+      );
+    });
   });
 
   describe('POST /panic/unlock/biometrics', () => {

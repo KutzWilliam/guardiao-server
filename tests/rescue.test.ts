@@ -15,18 +15,28 @@ describe('Public Rescue Endpoints', () => {
       mockPrisma.device.findUnique.mockResolvedValue({
         id: VALID_UUID,
         status: 'PANICO',
+        user: { name: 'Maria', phone: '11999999999', city: 'Curitiba', emergencyNote: 'Alergia' },
+        panics: [{ id: 1, triggerType: 'PIN_PANICO_IMEDIATO', timestamp: new Date() }],
       });
       mockPrisma.location.findFirst.mockResolvedValue({
         latitude: -23.55052,
         longitude: -46.633308,
         timestamp: new Date(),
       });
+      mockPrisma.location.findMany.mockResolvedValue([
+        {
+          latitude: -23.55052,
+          longitude: -46.633308,
+          timestamp: new Date(),
+        },
+      ]);
 
       const res = await request(app).get(`/resgate/info/${VALID_UUID}`);
 
       expect(res.status).toBe(200);
       expect(res.body.device.id).toBe(VALID_UUID);
       expect(res.body.lastLocation.latitude).toBe(-23.55052);
+      expect(Array.isArray(res.body.locations)).toBe(true);
     });
 
     it('deve retornar 404 se o aparelho não existir', async () => {
@@ -56,6 +66,25 @@ describe('Public Rescue Endpoints', () => {
         where: { id: VALID_UUID },
         data: { status: 'SECURE' },
       });
+    });
+
+    it('deve emitir Dossiê Policial autenticado em GET /resgate/dossier/:deviceId', async () => {
+      mockPrisma.device.findUnique.mockResolvedValue({
+        id: VALID_UUID,
+        status: 'PANICO',
+        updatedAt: new Date(),
+        user: { name: 'Maria Silva', cpf: '12345678900', phone: '11999999999', email: 'm@e.com', city: 'Curitiba', emergencyNote: 'Tipo O+' },
+        panics: [{ id: 1, triggerType: 'PIN_PANICO_IMEDIATO', timestamp: new Date(), resolved: false }],
+        locations: [{ id: 1, latitude: -25.4284, longitude: -49.2733, timestamp: new Date() }],
+        contacts: [{ name: 'João', phone: '11988887777' }],
+      });
+
+      const res = await request(app).get(`/resgate/dossier/${VALID_UUID}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.protocolId).toMatch(/^GRD-/);
+      expect(res.body.victim.name).toBe('Maria Silva');
+      expect(res.body.gpsHistory.length).toBe(1);
     });
 
     it('deve confirmar pânico quando contato clica "Confirmar Pânico"', async () => {

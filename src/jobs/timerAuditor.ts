@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { PrismaClient } from '@prisma/client';
 import * as admin from 'firebase-admin';
+import { alertarContatosDeEmergencia as notificarContatos } from '../services/notificationService';
 
 const prisma = new PrismaClient();
 
@@ -25,9 +26,9 @@ function calcularDistanciaHaversine(
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(lat1 * rad) *
-      Math.cos(lat2 * rad) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
+    Math.cos(lat2 * rad) *
+    Math.sin(dLon / 2) *
+    Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
@@ -39,7 +40,11 @@ function calcularDistanciaHaversine(
 async function enviarComandoLockFCM(fcmToken: string, deviceId: string, triggerType: string): Promise<void> {
   console.log(`📡 [AUDITOR] [${deviceId}] Disparando LOCK via FCM. Motivo: ${triggerType}`);
   try {
-    const mensagem = { data: { comando: 'LOCK' }, token: fcmToken };
+    if (!admin.apps || admin.apps.length === 0) {
+      console.warn(`⚠️ [AUDITOR] Firebase Admin não inicializado. Ignorando envio FCM para [${deviceId}].`);
+      return;
+    }
+    const mensagem = { data: { comando: 'LOCK', triggerType }, token: fcmToken };
     const response = await admin.messaging().send(mensagem);
     console.log(`✅ [AUDITOR] Comando FCM enviado. ID: ${response}`);
   } catch (error) {
@@ -49,8 +54,7 @@ async function enviarComandoLockFCM(fcmToken: string, deviceId: string, triggerT
 }
 
 /**
- * Simula o alerta para os contatos de emergência vinculados ao timer.
- * Agora integrado com n8n via Webhook.
+ * Alerta os contatos de emergência vinculados ao timer usando o serviço unificado (n8n + fallback WAHA).
  */
 async function alertarContatosDeEmergencia(
   deviceId: string,
@@ -58,37 +62,12 @@ async function alertarContatosDeEmergencia(
   eventName: string,
   userName: string = 'Seu contato'
 ): Promise<void> {
-  const linkResgate = `https://guardiao-public.onrender.com/resgate/${deviceId}`;
-  const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || 'http://localhost:5678/webhook/guardiao-alerta';
-
   if (contatos.length === 0) {
     console.warn(`⚠️ [AUDITOR] Timer de [${deviceId}] expirou em perigo, mas sem contatos cadastrados para notificar.`);
     return;
   }
 
-  for (const contato of contatos) {
-    console.log(`\n======================================================`);
-    console.log(`📱 ALERTA N8N → ${contato.name} (${contato.phone}):`);
-    console.log(`"Alerta Guardião: A usuária não chegou ao destino no horário combinado.`);
-    console.log(`Por favor, acesse o painel urgente para verificar:`);
-    console.log(`👉 ${linkResgate} "`);
-    console.log(`======================================================\n`);
-
-    try {
-      // Dispara o webhook para o n8n
-      const axios = require('axios');
-      await axios.post(N8N_WEBHOOK_URL, {
-        contactPhone: contato.phone,
-        contactName: contato.name,
-        userName: userName,
-        eventName: eventName,
-        rescueLink: linkResgate
-      });
-      console.log(`✅ [AUDITOR] Webhook n8n disparado com sucesso para ${contato.name}`);
-    } catch (error: any) {
-      console.error(`❌ [AUDITOR] Falha ao disparar webhook para n8n:`, error.message);
-    }
-  }
+  await notificarContatos(deviceId, 'TIMER_EXPIRED', eventName);
 }
 
 // ==========================================
@@ -209,9 +188,9 @@ async function auditarTimers(): Promise<void> {
 
       // 4e. Alerta os contatos de emergência vinculados ao timer
       await alertarContatosDeEmergencia(
-        timer.deviceId, 
-        timer.contacts, 
-        timer.eventName, 
+        timer.deviceId,
+        timer.contacts,
+        timer.eventName,
         timer.device.user?.name || 'Seu contato'
       );
 

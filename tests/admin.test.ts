@@ -264,5 +264,51 @@ describe('Admin Tower Control Endpoints', () => {
       expect(res.status).toBe(400);
     });
   });
+
+  describe('GET /admin/metrics & POST /admin/devices/:deviceId/simulate-route', () => {
+    it('deve retornar KPIs do Piloto em GET /admin/metrics', async () => {
+      mockPrisma.device.findMany.mockResolvedValue([
+        { id: VALID_UUID, status: 'PANICO' },
+      ]);
+      mockPrisma.user.findMany.mockResolvedValue([{ id: 'user-1' }]);
+      mockPrisma.panicEvent.findMany.mockResolvedValue([
+        { id: 1, triggerType: 'PIN_MODO_TEATRO', resolved: false },
+      ]);
+      mockPrisma.timer.findMany.mockResolvedValue([]);
+      mockPrisma.unlockRequest.findMany.mockResolvedValue([]);
+
+      const res = await request(app)
+        .get('/admin/metrics')
+        .set('X-Admin-Key', ADMIN_KEY);
+
+      expect(res.status).toBe(200);
+      expect(res.body.totalDevices).toBe(1);
+      expect(res.body.devicesInPanic).toBe(1);
+      expect(res.body.avgTimeToLockSeconds).toBeDefined();
+      expect(res.body.fraudAttemptsBlocked).toBeGreaterThanOrEqual(1);
+    });
+
+    it('deve simular rota ao vivo em POST /admin/devices/:deviceId/simulate-route', async () => {
+      mockPrisma.device.findUnique.mockResolvedValue({ id: VALID_UUID, status: 'PANICO' });
+      mockPrisma.location.findFirst.mockResolvedValue({
+        latitude: -25.4284,
+        longitude: -49.2733,
+      });
+      mockPrisma.location.create.mockResolvedValue({
+        id: 1,
+        latitude: -25.429,
+        longitude: -49.274,
+        timestamp: new Date(),
+      });
+
+      const res = await request(app)
+        .post(`/admin/devices/${VALID_UUID}/simulate-route`)
+        .set('X-Admin-Key', ADMIN_KEY)
+        .send({ points: 3 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.locations.length).toBe(3);
+    });
+  });
 });
 
